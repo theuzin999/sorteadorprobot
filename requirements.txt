@@ -1,0 +1,8 @@
+# requirements.txt
+selenium
+webdriver-manager
+firebase-admin
+pytz
+firebase-admin
+selenium
+webdriver-manager

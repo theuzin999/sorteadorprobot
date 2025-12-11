@@ -1,0 +1,29 @@
+GoathBot V6.0 - Dual Monitoring
+Overview
+A Selenium-based bot that scrapes betting game data from goathbet.com and stores it in Firebase Realtime Database. It monitors two Aviator games simultaneously using threading.
+
+Project Structure
+bot_secure_relogin.py - Main bot script with dual-mode monitoring
+requirements.txt - Python dependencies
+square.json - Original project configuration
+serviceAccountKey.json - Firebase credentials (required, not included in repo)
+Environment Variables Required
+EMAIL - Login email for goathbet.com
+PASSWORD - Login password for goathbet.com
+Firebase Setup
+The bot requires a Firebase service account key file named serviceAccountKey.json in the project root.
+
+Dependencies
+selenium - Web automation
+webdriver-manager - ChromeDriver management
+firebase-admin - Firebase integration
+pytz - Timezone handling
+System Requirements
+chromium - Browser for Selenium
+chromedriver - WebDriver for Chromium
+Running
+The bot runs continuously, monitoring two Aviator games and sending multiplier data to Firebase.
+
+Recent Changes
+2025-12-11: Initial Replit environment setup
+Updated chromedriver path detection for Replit compatibility
