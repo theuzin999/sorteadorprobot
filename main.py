@@ -14,13 +14,13 @@ import pytz
 import logging
 
 # =============================================================
-# 🔥 GOATHBOT V6.3 - SINGLE DRIVER / DUAL TAB (MAX OTIMIZAÇÃO)
+# 🔥 GOATHBOT V6.5 - SINGLE DRIVER / DUAL TAB (LOW-DELAY)
 # =============================================================
 SERVICE_ACCOUNT_FILE = 'serviceAccountKey.json'
 DATABASE_URL = 'https://history-dashboard-a70ee-default-rtdb.firebaseio.com'
 URL_DO_SITE = "https://www.goathbet.com"
 
-# CONFIGURAÇÃO DOS DOIS JOGOS (Agora processados em série)
+# CONFIGURAÇÃO DOS DOIS JOGOS
 BOT_CONFIG_1 = {
     "nome": "ORIGINAL",
     "link": "https://www.goathbet.com/pt/casino/spribe/aviator",
@@ -40,11 +40,11 @@ EMAIL = os.getenv("EMAIL")
 PASSWORD = os.getenv("PASSWORD")
 TZ_BR = pytz.timezone("America/Sao_Paulo")
 
-# Configurações de Otimização
-POLLING_INTERVAL = 1.0          # Reduz interações para aliviar CPU
+# Configurações de Otimização (LOW DELAY)
+POLLING_INTERVAL = 0.1          # MÍNIMO DELAY
 TEMPO_MAX_INATIVIDADE = 600     # 10 minutos tolerância
-RECYCLE_HOURS = 12              # Reinicia driver a cada 12 horas para limpar memória (CRÍTICO!)
-LOG_LIMIT = 50                  # Limpa o console a cada 50 envios
+RECYCLE_HOURS = 12              # Reinicia driver a cada 12 horas para limpar memória
+LOG_LIMIT = 20                  # Imprime resumo a cada 20 envios (otimização de console)
 
 # Variáveis globais para rastreamento
 LAST_SENT_1 = None
@@ -53,6 +53,8 @@ LOG_COUNTER_1 = 0
 LOG_COUNTER_2 = 0
 ULTIMO_MULTIPLIER_TIME_1 = time()
 ULTIMO_MULTIPLIER_TIME_2 = time()
+HIST_REF_1 = None               # Referência do elemento de histórico do Bot 1
+HIST_REF_2 = None               # Referência do elemento de histórico do Bot 2
 
 
 # =============================================================
@@ -82,16 +84,13 @@ def start_driver():
     options.add_argument("--silent")
 
     try:
-        # Tenta a instalação automática do driver
         return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     except:
-        # Fallback para servidores Linux
         import shutil
         chromedriver_path = shutil.which("chromedriver") or "/usr/bin/chromedriver"
         return webdriver.Chrome(service=Service(chromedriver_path), options=options)
 
 def safe_click(driver, by, value, timeout=5):
-    # Função auxiliar para cliques seguros
     try:
         element = WebDriverWait(driver, timeout).until(EC.element_to_be_clickable((by, value)))
         driver.execute_script("arguments[0].click();", element)
@@ -101,7 +100,7 @@ def safe_click(driver, by, value, timeout=5):
 def check_blocking_modals(driver):
     """Fecha popups chatos"""
     try:
-        driver.switch_to.default_content() # Garante que está fora do iframe
+        driver.switch_to.default_content()
         xpaths = [
             "//button[contains(., 'Sim')]", 
             "//button[@data-age-action='yes']", 
@@ -113,7 +112,6 @@ def check_blocking_modals(driver):
     except: pass
 
 def process_login(driver):
-    # 1. Acessa Home e faz Login
     try: driver.get(URL_DO_SITE)
     except: pass
     sleep(2)
@@ -135,16 +133,16 @@ def process_login(driver):
     return True
 
 def initialize_game_elements(driver, nome, link):
-    """Navega, localiza iframe e o elemento de histórico, retornando os ponteiros."""
+    """Navega, localiza iframe e o elemento de histórico, retornando o ponteiro do histórico."""
     print(f"🌍 [{nome}] Navegando para {link}...")
     driver.get(link)
     
-    sleep(5) # Aguarda carregamento do iframe
+    sleep(5)
     check_blocking_modals(driver)
 
-    iframe = None
     try:
-        # Procura iframes da Spribe ou genéricos de jogo
+        # Busca o iframe
+        driver.switch_to.default_content() 
         iframe = WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.XPATH, '//iframe[contains(@src, "spribe") or contains(@src, "aviator") or contains(@id, "game")]'))
         )
@@ -166,6 +164,7 @@ def initialize_game_elements(driver, nome, link):
         
         for sel in seletores:
             try:
+                # Usando find_elements para retornar lista (evita NoSuchElementException)
                 found = driver.find_elements(By.CSS_SELECTOR, sel)
                 if found:
                     hist = found[0]
@@ -173,7 +172,6 @@ def initialize_game_elements(driver, nome, link):
             except: continue
             
         if not hist:
-            # Tenta fallback com wait explícito no mais comum
             hist = WebDriverWait(driver, 5).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, ".payouts-block, app-stats-widget"))
             )
@@ -193,17 +191,23 @@ def getColorClass(value):
         return "default-bg"
     except: return "default-bg"
 
-def read_and_send(driver, hist, config, is_first_bot):
-    """Função que lê o multiplicador e envia para o Firebase."""
+def read_and_send(driver, config, is_first_bot):
+    """Função que lê o multiplicador e envia para o Firebase, com recuperação de Stale Element."""
     global LAST_SENT_1, LAST_SENT_2, LOG_COUNTER_1, LOG_COUNTER_2, ULTIMO_MULTIPLIER_TIME_1, ULTIMO_MULTIPLIER_TIME_2
+    global HIST_REF_1, HIST_REF_2 
 
     nome = config["nome"]
     path_fb = config["firebase_path"]
     
-    # Define as variáveis de rastreamento corretas
+    # Referencia as variáveis corretas
     LAST_SENT = LAST_SENT_1 if is_first_bot else LAST_SENT_2
     LOG_COUNTER = LOG_COUNTER_1 if is_first_bot else LOG_COUNTER_2
     ULTIMO_MULTIPLIER_TIME = ULTIMO_MULTIPLIER_TIME_1 if is_first_bot else ULTIMO_MULTIPLIER_TIME_2
+    HIST_REF = HIST_REF_1 if is_first_bot else HIST_REF_2
+
+    if not HIST_REF:
+        print(f"⚠️ [{nome}] Referência de histórico perdida. Forçando reinício completo.")
+        raise Exception("Referência HIST perdida.")
 
     try:
         # 1. Check Inatividade
@@ -211,13 +215,16 @@ def read_and_send(driver, hist, config, is_first_bot):
             raise Exception("Inatividade detectada - Forçando reinício do driver")
 
         # 2. Leitura
-        driver.switch_to.default_content() # Garante que saímos do iframe anterior, se necessário
-        driver.switch_to.frame(driver.find_element(By.TAG_NAME, 'iframe')) # Volta para o iframe correto
+        # Muda para o iframe (CRUCIAL a cada troca de aba)
+        driver.switch_to.default_content() 
+        iframe = driver.find_element(By.XPATH, '//iframe[contains(@src, "spribe") or contains(@src, "aviator") or contains(@id, "game")]')
+        driver.switch_to.frame(iframe)
 
-        items = hist.find_elements(By.CSS_SELECTOR, ".payout, .bubble-multiplier, app-bubble-multiplier, .payout-item, .history-item")
+        # Tenta ler o elemento 'hist' armazenado
+        items = HIST_REF.find_elements(By.CSS_SELECTOR, ".payout, .bubble-multiplier, app-bubble-multiplier, .payout-item, .history-item")
         
         if not items:
-            return # Sem multiplicador novo
+            return 
 
         first_payout = items[0]
         raw_text = first_payout.get_attribute("innerText")
@@ -258,22 +265,39 @@ def read_and_send(driver, hist, config, is_first_bot):
             except Exception as e:
                 print(f"⚠️ [{nome}] Erro Firebase: {e}")
         
-    except (StaleElementReferenceException, TimeoutException) as e:
-        # Elemento mudou. A main loop vai forçar a re-inicialização completa dos dois.
-        print(f"⚠️ [{nome}] DOM mudou (Stale). Forçando reinício completo para re-inicializar elementos.")
-        raise Exception("Stale Element detected")
-    
+    except StaleElementReferenceException:
+        # Tenta recuperar a referência do elemento 'hist' sem reiniciar o driver
+        print(f"⚠️ [{nome}] DOM mudou (Stale). Tentando re-inicializar o elemento 'hist'...")
+        driver.switch_to.default_content()
+        driver.switch_to.window(driver.current_window_handle)
+        
+        hist_new = initialize_game_elements(driver, nome, config["link"]) 
+
+        if hist_new:
+            # Atualiza a referência global com o novo elemento
+            if is_first_bot:
+                global HIST_REF_1
+                HIST_REF_1 = hist_new
+            else:
+                global HIST_REF_2
+                HIST_REF_2 = hist_new
+            print(f"✅ [{nome}] Elemento 'hist' recuperado. Continuando leitura.")
+            return
+        else:
+            raise Exception("Falha crítica ao re-inicializar elementos após Stale.")
+
     except Exception as e:
-        # Qualquer outro erro
         print(f"⚠️ [{nome}] Erro genérico na leitura: {e}. Forçando reinício...")
         raise e
 
-    # Atualiza as variáveis globais
+    # Atualiza as variáveis globais de rastreamento
     if is_first_bot:
+        global LAST_SENT_1, LOG_COUNTER_1, ULTIMO_MULTIPLIER_TIME_1
         LAST_SENT_1 = LAST_SENT
         LOG_COUNTER_1 = LOG_COUNTER
         ULTIMO_MULTIPLIER_TIME_1 = ULTIMO_MULTIPLIER_TIME
     else:
+        global LAST_SENT_2, LOG_COUNTER_2, ULTIMO_MULTIPLIER_TIME_2
         LAST_SENT_2 = LAST_SENT
         LOG_COUNTER_2 = LOG_COUNTER
         ULTIMO_MULTIPLIER_TIME_2 = ULTIMO_MULTIPLIER_TIME
@@ -283,7 +307,8 @@ def read_and_send(driver, hist, config, is_first_bot):
 # 🤖 LÓGICA PRINCIPAL (MONITORAMENTO DUAL)
 # =============================================================
 def run_dual_bot():
-    """Função que roda os dois bots em um único driver."""
+    
+    global HIST_REF_1, HIST_REF_2 # Necessário para modificar as referências globais
     
     relogin_date = date.today()
     next_recycle_time = datetime.now(TZ_BR) + timedelta(hours=RECYCLE_HOURS)
@@ -298,7 +323,7 @@ def run_dual_bot():
             process_login(driver)
             
             # 1. Configura Bot 1 (Aba principal)
-            hist1 = initialize_game_elements(driver, BOT_CONFIG_1["nome"], BOT_CONFIG_1["link"])
+            HIST_REF_1 = initialize_game_elements(driver, BOT_CONFIG_1["nome"], BOT_CONFIG_1["link"])
             handle1 = driver.current_window_handle
             
             # 2. Configura Bot 2 (Nova aba)
@@ -308,9 +333,9 @@ def run_dual_bot():
             handle2 = handles[1] if len(handles) > 1 else handles[0]
             
             driver.switch_to.window(handle2)
-            hist2 = initialize_game_elements(driver, BOT_CONFIG_2["nome"], BOT_CONFIG_2["link"])
+            HIST_REF_2 = initialize_game_elements(driver, BOT_CONFIG_2["nome"], BOT_CONFIG_2["link"])
 
-            if not hist1 or not hist2: 
+            if not HIST_REF_1 or not HIST_REF_2: 
                 raise Exception("Falha ao inicializar elementos de um ou ambos os jogos.")
 
             print("\n==============================================")
@@ -322,30 +347,29 @@ def run_dual_bot():
                 now_br = datetime.now(TZ_BR)
                 
                 if now_br.hour == 0 and now_br.minute <= 5 and (relogin_date != now_br.date()):
-                    print("🌙 Reinício diário (Limpeza de Logs e Cache) iniciado...")
+                    print("🌙 Reinício diário iniciado...")
                     driver.quit()
                     relogin_date = now_br.date()
                     break 
                 
                 if now_br >= next_recycle_time:
-                    print(f"♻️ Reinício periódico (Reciclagem de Driver) iniciado para limpar {RECYCLE_HOURS}h de acúmulo de RAM...")
+                    print(f"♻️ Reinício periódico (Reciclagem de Driver) iniciado...")
                     driver.quit()
                     next_recycle_time = now_br + timedelta(hours=RECYCLE_HOURS)
                     break 
 
                 # 2. Leitura Bot 1
                 driver.switch_to.window(handle1)
-                read_and_send(driver, hist1, BOT_CONFIG_1, is_first_bot=True)
+                read_and_send(driver, BOT_CONFIG_1, is_first_bot=True)
 
                 # 3. Leitura Bot 2
                 driver.switch_to.window(handle2)
-                read_and_send(driver, hist2, BOT_CONFIG_2, is_first_bot=False)
+                read_and_send(driver, BOT_CONFIG_2, is_first_bot=False)
 
-                # Pausa para reduzir uso de CPU
+                # Pausa mínima
                 sleep(POLLING_INTERVAL)
 
         except Exception as e:
-            # Qualquer falha crítica força o reinício do driver (incluindo Stale Element)
             print(f"❌ Falha Crítica: {e}. Reiniciando o driver em 15s...")
             if driver:
                 try: driver.quit()
