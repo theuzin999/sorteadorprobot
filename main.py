@@ -14,7 +14,7 @@ import pytz
 import logging
 
 # =============================================================
-# 🔥 GOATHBOT V6.5 - SINGLE DRIVER / DUAL TAB (LOW-DELAY)
+# 🔥 GOATHBOT V6.5 - SINGLE DRIVER / DUAL TAB (FINAL)
 # =============================================================
 SERVICE_ACCOUNT_FILE = 'serviceAccountKey.json'
 DATABASE_URL = 'https://history-dashboard-a70ee-default-rtdb.firebaseio.com'
@@ -41,20 +41,20 @@ PASSWORD = os.getenv("PASSWORD")
 TZ_BR = pytz.timezone("America/Sao_Paulo")
 
 # Configurações de Otimização (LOW DELAY)
-POLLING_INTERVAL = 0.1          # MÍNIMO DELAY
-TEMPO_MAX_INATIVIDADE = 600     # 10 minutos tolerância
-RECYCLE_HOURS = 12              # Reinicia driver a cada 12 horas para limpar memória
-LOG_LIMIT = 20                  # Imprime resumo a cada 20 envios (otimização de console)
+POLLING_INTERVAL = 0.1
+TEMPO_MAX_INATIVIDADE = 600
+RECYCLE_HOURS = 12
+LOG_LIMIT = 20
 
-# Variáveis globais para rastreamento
+# Variáveis globais para rastreamento (DEFINIÇÃO)
 LAST_SENT_1 = None
 LAST_SENT_2 = None
 LOG_COUNTER_1 = 0
 LOG_COUNTER_2 = 0
 ULTIMO_MULTIPLIER_TIME_1 = time()
 ULTIMO_MULTIPLIER_TIME_2 = time()
-HIST_REF_1 = None               # Referência do elemento de histórico do Bot 1
-HIST_REF_2 = None               # Referência do elemento de histórico do Bot 2
+HIST_REF_1 = None
+HIST_REF_2 = None
 
 
 # =============================================================
@@ -141,7 +141,6 @@ def initialize_game_elements(driver, nome, link):
     check_blocking_modals(driver)
 
     try:
-        # Busca o iframe
         driver.switch_to.default_content() 
         iframe = WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.XPATH, '//iframe[contains(@src, "spribe") or contains(@src, "aviator") or contains(@id, "game")]'))
@@ -153,7 +152,6 @@ def initialize_game_elements(driver, nome, link):
 
     hist = None
     try:
-        # Tenta múltiplos seletores para o container do histórico
         seletores = [
             ".payouts-block", 
             "app-stats-widget", 
@@ -164,7 +162,6 @@ def initialize_game_elements(driver, nome, link):
         
         for sel in seletores:
             try:
-                # Usando find_elements para retornar lista (evita NoSuchElementException)
                 found = driver.find_elements(By.CSS_SELECTOR, sel)
                 if found:
                     hist = found[0]
@@ -193,6 +190,7 @@ def getColorClass(value):
 
 def read_and_send(driver, config, is_first_bot):
     """Função que lê o multiplicador e envia para o Firebase, com recuperação de Stale Element."""
+    # Declaração global de TODAS as variáveis globais que serão MODIFICADAS aqui.
     global LAST_SENT_1, LAST_SENT_2, LOG_COUNTER_1, LOG_COUNTER_2, ULTIMO_MULTIPLIER_TIME_1, ULTIMO_MULTIPLIER_TIME_2
     global HIST_REF_1, HIST_REF_2 
 
@@ -215,12 +213,10 @@ def read_and_send(driver, config, is_first_bot):
             raise Exception("Inatividade detectada - Forçando reinício do driver")
 
         # 2. Leitura
-        # Muda para o iframe (CRUCIAL a cada troca de aba)
         driver.switch_to.default_content() 
         iframe = driver.find_element(By.XPATH, '//iframe[contains(@src, "spribe") or contains(@src, "aviator") or contains(@id, "game")]')
         driver.switch_to.frame(iframe)
 
-        # Tenta ler o elemento 'hist' armazenado
         items = HIST_REF.find_elements(By.CSS_SELECTOR, ".payout, .bubble-multiplier, app-bubble-multiplier, .payout-item, .history-item")
         
         if not items:
@@ -271,15 +267,13 @@ def read_and_send(driver, config, is_first_bot):
         driver.switch_to.default_content()
         driver.switch_to.window(driver.current_window_handle)
         
+        # O initialize_game_elements vai navegar para a URL correta e re-encontrar o iframe e o hist
         hist_new = initialize_game_elements(driver, nome, config["link"]) 
 
         if hist_new:
-            # Atualiza a referência global com o novo elemento
             if is_first_bot:
-                global HIST_REF_1
                 HIST_REF_1 = hist_new
             else:
-                global HIST_REF_2
                 HIST_REF_2 = hist_new
             print(f"✅ [{nome}] Elemento 'hist' recuperado. Continuando leitura.")
             return
@@ -290,14 +284,12 @@ def read_and_send(driver, config, is_first_bot):
         print(f"⚠️ [{nome}] Erro genérico na leitura: {e}. Forçando reinício...")
         raise e
 
-    # Atualiza as variáveis globais de rastreamento
+    # Atualiza as variáveis globais de rastreamento (LAST_SENT, LOG_COUNTER, ULTIMO_MULTIPLIER_TIME)
     if is_first_bot:
-        global LAST_SENT_1, LOG_COUNTER_1, ULTIMO_MULTIPLIER_TIME_1
         LAST_SENT_1 = LAST_SENT
         LOG_COUNTER_1 = LOG_COUNTER
         ULTIMO_MULTIPLIER_TIME_1 = ULTIMO_MULTIPLIER_TIME
     else:
-        global LAST_SENT_2, LOG_COUNTER_2, ULTIMO_MULTIPLIER_TIME_2
         LAST_SENT_2 = LAST_SENT
         LOG_COUNTER_2 = LOG_COUNTER
         ULTIMO_MULTIPLIER_TIME_2 = ULTIMO_MULTIPLIER_TIME
@@ -307,13 +299,15 @@ def read_and_send(driver, config, is_first_bot):
 # 🤖 LÓGICA PRINCIPAL (MONITORAMENTO DUAL)
 # =============================================================
 def run_dual_bot():
+    """Função que roda os dois bots em um único driver."""
     
-    global HIST_REF_1, HIST_REF_2 # Necessário para modificar as referências globais
+    # 🚨 CORREÇÃO DE ERRO: As declarações globais DEVE SER AS PRIMEIRAS!
+    global HIST_REF_1, HIST_REF_2 
     
     relogin_date = date.today()
     next_recycle_time = datetime.now(TZ_BR) + timedelta(hours=RECYCLE_HOURS)
 
-    while True: # Loop infinito de reconexão se cair
+    while True:
         driver = None
         try:
             print("🔄 Iniciando driver único...")
@@ -343,6 +337,7 @@ def run_dual_bot():
             print("==============================================\n")
             
             while True: # Loop de leitura
+                
                 # 1. Manutenção Diária/Reciclagem Agendada
                 now_br = datetime.now(TZ_BR)
                 
