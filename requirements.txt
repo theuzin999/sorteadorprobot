@@ -1,4 +1,5 @@
 selenium
-webdriver-manager
+webdriver-manager>=4.0.1
 firebase-admin
 pytz
+packaging
