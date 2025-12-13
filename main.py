@@ -61,7 +61,7 @@ LINK_AVIATOR_2 = "https://www.goathbet.com/pt/casino/spribe/aviator-2"
 FIREBASE_PATH_ORIGINAL = "history"
 FIREBASE_PATH_2 = "aviator2"
 
-POLLING_INTERVAL = 0.5 # Aumentado para 0.5s para reduzir CPU/Logs
+POLLING_INTERVAL = 0.5 
 TEMPO_MAX_INATIVIDADE = 360 
 TZ_BR = pytz.timezone("America/Sao_Paulo")
 
@@ -98,7 +98,7 @@ def verificar_modais_bloqueio(driver):
         except: pass
 
 # =============================================================
-# 🚀 DRIVER OTIMIZADO PARA NUVEM
+# 🚀 DRIVER OTIMIZADO PARA NUVEM (SEM MUDANÇAS)
 # =============================================================
 def initialize_driver_instance():
     if os.name == 'nt':
@@ -118,13 +118,11 @@ def initialize_driver_instance():
     options.add_argument("--log-level=3")
     options.add_argument("user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
-    # Fixando o binário do Chromium na Square Cloud
     if os.path.exists("/usr/bin/chromium"):
         options.binary_location = "/usr/bin/chromium"
     elif os.path.exists("/usr/bin/google-chrome"):
         options.binary_location = "/usr/bin/google-chrome"
 
-    # Bloquear imagens
     prefs = {
         "profile.managed_default_content_settings.images": 2,
         "profile.default_content_setting_values.notifications": 2,
@@ -142,7 +140,6 @@ def initialize_driver_instance():
 
 def setup_tabs(driver):
     print("➡️ Acessando site...")
-    # ... (Login e setup das abas permanecem iguais, pois funcionaram) ...
     try:
         driver.get(URL_DO_SITE)
         sleep(5)
@@ -192,86 +189,75 @@ def setup_tabs(driver):
         raise e
 
 # =============================================================
-# 🎮 LÓGICA DE BUSCA RÁPIDA (Foco na Reconexão)
+# 🎮 LÓGICA DE BUSCA AGRESSIVA V5
 # =============================================================
 
-# Seletores para o histórico (mais robusto)
-HISTORY_CONTAINER_SELECTORS = [
-    "app-stats-widget",        # Container comum
-    ".payouts-block",          # Outro container comum
-    ".result-buttons-container" # Container mais externo (ajuda a focar)
-]
-
-# Seletores para o primeiro item do histórico
-FIRST_PAYOUT_SELECTORS = [
-    ".payout:first-child",
-    ".bubble-multiplier:first-child",
-    ".ng-star-inserted:first-child .bubble-multiplier"
+# Lista de Seletores Agressivos (CSS e XPath)
+FIRST_PAYOUT_SELECTORS_V5 = [
+    ".payout:first-child",                              # Mais comum (CSS)
+    ".bubble-multiplier:first-child",                   # Segundo mais comum (CSS)
+    "app-stats-widget .payout:first-child",             # Com container (CSS)
+    ".payouts-block .payout:first-child",               # Com container (CSS)
+    "//div[contains(@class, 'payout')][1]",             # Busca direta por div com 'payout' (XPath)
+    "//div[contains(@class, 'bubble-multiplier')][1]",  # Busca direta por div com 'bubble-multiplier' (XPath)
+    "//div[contains(@class, 'results-block-item__value')][1]", # Variação (XPath)
+    "//a[contains(@class, 'bubble-multiplier')][1]"      # Às vezes é um link (XPath)
 ]
 
 
 def find_game_elements_quick(driver, log_name="GAME"):
-    """Tenta encontrar o iframe e o elemento do histórico rapidamente."""
+    """Tenta encontrar o iframe e o seletor do histórico."""
     
-    driver.switch_to.default_content() # Volta para o HTML principal
+    driver.switch_to.default_content() 
     
-    # 1. Busca pelo iframe (o mais comum)
+    # 1. Busca pelo iframe
     try:
         # Busca o iframe que contém spribe ou aviator na URL de origem (src)
         iframe = driver.find_element(By.XPATH, '//iframe[contains(@src, "spribe") or contains(@src, "aviator")]')
     except NoSuchElementException:
-        print(f"❌ {log_name}: Iframe não encontrado.")
-        return None, None, None
+        print(f"❌ {log_name}: Iframe principal não encontrado.")
+        return None, None
 
     # 2. Entra no iframe
     try:
         driver.switch_to.frame(iframe)
     except:
         print(f"❌ {log_name}: Falha ao entrar no Iframe.")
-        return None, None, None
+        return None, None 
     
-    # 3. Busca o container de histórico (para focar a busca)
-    history_container = None
-    for selector in HISTORY_CONTAINER_SELECTORS:
+    # 3. Busca agressiva pelo primeiro multiplicador
+    for selector in FIRST_PAYOUT_SELECTORS_V5:
         try:
-            history_container = driver.find_element(By.CSS_SELECTOR, selector)
-            break
-        except:
-            continue
+            # Determina o tipo de busca (CSS ou XPath)
+            by_type = By.CSS_SELECTOR if not selector.startswith('//') else By.XPATH
             
-    if not history_container:
-        print(f"❌ {log_name}: Container do histórico não encontrado dentro do iframe.")
-        return None, None, None
-        
-    # 4. Busca o primeiro multiplicador (dentro do container)
-    for selector in FIRST_PAYOUT_SELECTORS:
-        try:
-            # Tenta encontrar o elemento final a partir do container
-            first_payout = history_container.find_element(By.CSS_SELECTOR, selector.split(':first-child')[0]) # Tenta achar pelo seletor base
-            print(f"🎯 {log_name}: Conexão Estabelecida com '{selector}'")
-            # Retornamos o Iframe, o Container e o Seletor do Payout
-            return iframe, history_container, selector 
+            # Se for CSS, tenta pegar o primeiro elemento. Se for XPath, pega a lista e verifica.
+            elements = driver.find_elements(by_type, selector)
+            
+            if elements:
+                # Se achou algum elemento, o seletor funcionou.
+                print(f"🎯 {log_name}: Conexão Estabelecida com o Seletor: '{selector}'")
+                return iframe, selector 
         except:
+            # Continua para o próximo seletor em caso de erro
             continue
 
-    print(f"❌ {log_name}: Primeiro multiplicador não encontrado.")
-    return None, None, None
+    print(f"❌ {log_name}: NENHUM multiplicador encontrado dentro do iframe. Todos os seletores falharam.")
+    return None, None
 
 
 def start_bot(driver, game_handle: str, firebase_path: str):
     nome_log = "AVIATOR 1" if "history" in firebase_path else "AVIATOR 2"
     
     current_iframe = None
-    current_container = None
     current_payout_selector = None
     
     # Tentativa inicial de encontrar
     with DRIVER_LOCK:
         try:
             driver.switch_to.window(game_handle)
-            current_iframe, current_container, current_payout_selector = find_game_elements_quick(driver, nome_log)
+            current_iframe, current_payout_selector = find_game_elements_quick(driver, nome_log)
         except Exception as e:
-            # Captura exceções mais raras durante o setup inicial
             print(f"⚠️ {nome_log}: Erro no setup inicial: {e}")
             pass
 
@@ -291,30 +277,29 @@ def start_bot(driver, game_handle: str, firebase_path: str):
                 
                 # RECONEXÃO: Se perdeu a referência, tenta re-encontrar tudo
                 if not current_iframe or not current_payout_selector:
-                    current_iframe, current_container, current_payout_selector = find_game_elements_quick(driver, nome_log)
+                    current_iframe, current_payout_selector = find_game_elements_quick(driver, nome_log)
                     if not current_iframe:
-                        # Se não achou nada, continua o loop e espera o próximo ciclo
+                        # Se não achou nada, sai do lock para tentar de novo no próximo ciclo
                         raise Exception("Reconexão falhou")
 
-                # Garante que está dentro do iframe e foca no container
+                # Garante que está dentro do iframe
                 try:
                     driver.switch_to.frame(current_iframe)
-                    # Não precisamos re-encontrar o container, só precisamos garantir que o DOM está visível
                 except Exception:
                     # Se falhou a troca de frame, força re-conexão completa na próxima
                     current_iframe = None 
+                    driver.switch_to.default_content() # Tenta voltar para o default para não travar
                     raise Exception("Falha na troca de frame")
 
-                # Coleta texto (usamos o seletor completo, que inclui ':first-child')
-                element = driver.find_element(By.CSS_SELECTOR, current_payout_selector)
+                # Coleta texto
+                by_type = By.CSS_SELECTOR if not current_payout_selector.startswith('//') else By.XPATH
+                element = driver.find_element(by_type, current_payout_selector)
                 raw_text = element.get_attribute("innerText")
                 
             except (StaleElementReferenceException, NoSuchElementException, WebDriverException):
-                # Erro comum, reseta para forçar a busca de novo na próxima iteração
                 current_iframe = None
                 pass 
             except Exception:
-                # Erro geral de Selenium, reseta
                 current_iframe = None
                 pass
         
@@ -386,7 +371,7 @@ def rodar_ciclo_monitoramento():
             except: pass
 
 if __name__ == "__main__":
-    print("=== BOT AVIATOR ONLINE (SQUARE CLOUD V4 - SELECTORS FIX) ===")
+    print("=== BOT AVIATOR ONLINE (SQUARE CLOUD V5 - BUSCA AGRESSIVA) ===")
     while True:
         try:
             rodar_ciclo_monitoramento()
