@@ -14,7 +14,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException, NoSuchElementException, WebDriverException
 from webdriver_manager.chrome import ChromeDriverManager
-from webdriver_manager.core.os_manager import ChromeType 
+from webdriver_manager.core.os_manager import ChromeType # ⚠️ CRITICAL IMPORT FOR SQUARE CLOUD
 
 # Configurações de terceiros (Firebase)
 import firebase_admin
@@ -27,7 +27,7 @@ DRIVER_LOCK = threading.Lock()
 STOP_EVENT = threading.Event() 
 
 # =============================================================
-# 🔥 GOATHBOT V8 - DUAL MODE (FIX LEITURA FINAL)
+# 🔥 GOATHBOT V9 - DUAL MODE (SOLUÇÃO FINAL)
 # =============================================================
 SERVICE_ACCOUNT_FILE = 'serviceAccountKey.json'
 DATABASE_URL = 'https://history-dashboard-a70ee-default-rtdb.firebaseio.com'
@@ -55,17 +55,17 @@ PASSWORD = os.getenv("PASSWORD")
 TZ_BR = pytz.timezone("America/Sao_Paulo")
 
 # Configurações Turbo
-POLLING_INTERVAL = 0.5 
+POLLING_INTERVAL = 0.5 # Intervalo mais seguro para produção
 TEMPO_MAX_INATIVIDADE = 360     
 
-# Lista de Seletores Refinados V8: Foco no elemento que tem o número
-FIRST_PAYOUT_SELECTORS_V8 = [
-    ".payouts-block .payout:first-child",                 # Tenta achar o item dentro do bloco
-    "app-stats-widget .payout:first-child",               # Outra variação do container
-    ".bubble-multiplier:first-child",                     # O mais comum (o número puro)
-    "app-history-item:first-child .bubble-multiplier",    # Com o container da vela (item)
-    "//div[starts-with(@class, 'bubble-multiplier')][1]", # XPath mais específico para o número
-    "//div[contains(@class, 'payouts-block')]//div[starts-with(@class, 'payout')][1]" # Dentro do container
+# Seletores Refinados V9: Foco no elemento que tem o número
+FIRST_PAYOUT_SELECTORS_V9 = [
+    ".payouts-block .payout:first-child",                 
+    "app-stats-widget .payout:first-child",               
+    ".bubble-multiplier:first-child",                     
+    "app-history-item:first-child .bubble-multiplier",    
+    "//div[starts-with(@class, 'bubble-multiplier')][1]", 
+    "//div[contains(@class, 'payouts-block')]//div[starts-with(@class, 'payout')][1]" 
 ]
 
 
@@ -117,7 +117,7 @@ def verificar_modais_bloqueio(driver):
         except: pass
 
 # =============================================================
-# 🛠️ DRIVER E NAVEGAÇÃO (Sem mudanças)
+# 🛠️ DRIVER E NAVEGAÇÃO (Com correção do Chromium)
 # =============================================================
 def initialize_driver_instance():
     try:
@@ -137,12 +137,13 @@ def initialize_driver_instance():
     options.add_argument("--silent")
     options.add_argument("user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
-    # FIX CRÍTICO PARA SQUARE CLOUD / LINUX
+    # ⚠️ FIX CRÍTICO PARA SQUARE CLOUD / LINUX
     if os.path.exists("/usr/bin/chromium"):
         options.binary_location = "/usr/bin/chromium"
 
     try:
         print("🔧 Iniciando Driver (Modo Linux/Chromium)...")
+        # Força o uso do ChromeDriver compatível com a versão Linux/Chromium
         service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
         return webdriver.Chrome(service=service, options=options)
     except Exception as e:
@@ -200,9 +201,9 @@ def setup_tabs_and_login(driver):
     return handles
 
 # =============================================================
-# 🎮 BUSCA DE ELEMENTOS V8 (Apenas para achar o seletor)
+# 🎮 BUSCA DE ELEMENTOS V9 (Apenas para achar o seletor)
 # =============================================================
-def find_game_elements_v8(driver, game_handle, nome_log):
+def find_game_elements_v9(driver, game_handle, nome_log):
     try:
         driver.switch_to.window(game_handle)
         driver.switch_to.default_content()
@@ -210,13 +211,11 @@ def find_game_elements_v8(driver, game_handle, nome_log):
         iframe = WebDriverWait(driver, 10).until( 
             EC.presence_of_element_located((By.XPATH, '//iframe[contains(@src, "spribe") or contains(@src, "aviator")]'))
         )
-        # ⚠️ FIX V8: Tenta entrar no iframe imediatamente para evitar 'stale'
         driver.switch_to.frame(iframe) 
         
-        for selector in FIRST_PAYOUT_SELECTORS_V8:
+        for selector in FIRST_PAYOUT_SELECTORS_V9:
             try:
                 by_type = By.CSS_SELECTOR if not selector.startswith('//') else By.XPATH
-                # Dá 5 segundos para o elemento interno carregar
                 WebDriverWait(driver, 5).until(EC.presence_of_element_located((by_type, selector)))
                 
                 print(f"🎯 [{nome_log}] Conexão Estabelecida! Seletor: '{selector}'")
@@ -241,7 +240,7 @@ def start_bot_thread(driver, bot_config: dict, game_handle: str):
     firebase_path = bot_config['firebase_path']
     print(f"🚀 THREAD INICIADA: {nome_log} -> {firebase_path}")
 
-    iframe, payout_selector = find_game_elements_v8(driver, game_handle, nome_log)
+    iframe, payout_selector = find_game_elements_v9(driver, game_handle, nome_log)
     if not iframe:
         print(f"🚨 [{nome_log}] Falha inicial ao carregar. Tentando recuperar no loop...")
 
@@ -258,18 +257,16 @@ def start_bot_thread(driver, bot_config: dict, game_handle: str):
             try:
                 driver.switch_to.window(game_handle)
                 
-                # Re-busca se os elementos sumiram ou não foram encontrados
                 if not iframe or not payout_selector:
-                    iframe, payout_selector = find_game_elements_v8(driver, game_handle, nome_log)
+                    iframe, payout_selector = find_game_elements_v9(driver, game_handle, nome_log)
                     if not iframe: raise Exception("Falha ao localizar elementos.")
 
-                # Tenta entrar no iframe
-                driver.switch_to.frame(iframe) # ⚠️ O iframe precisa ser o objeto retornado (o que já fazemos)
+                driver.switch_to.frame(iframe)
 
                 by_type = By.CSS_SELECTOR if not payout_selector.startswith('//') else By.XPATH
                 first_payout = driver.find_element(by_type, payout_selector)
                 
-                # *** FIX CRÍTICO V7/V8: LEITURA ABRANGENTE ***
+                # *** FIX CRÍTICO V9: LEITURA ABRANGENTE ***
                 text_candidates = [
                     first_payout.text,
                     first_payout.get_attribute("innerText"),
@@ -277,28 +274,27 @@ def start_bot_thread(driver, bot_config: dict, game_handle: str):
                     first_payout.get_attribute("innerHTML")
                 ]
                 
-                # ⚠️ NOVO FIX V8: Tenta encontrar o texto válido em qualquer um dos atributos lidos
                 found_valid_text = False
                 for t in text_candidates:
                     if t:
                         temp_clean = t.strip().lower().replace('x', '').replace(',', '.')
                         try:
-                            # Tenta converter para float e verifica se é um multiplicador válido
                             if float(temp_clean) >= 1.0: 
-                                raw_text = t # Usa o texto original para debug, mas processa o limpo
+                                raw_text = t
                                 found_valid_text = True
                                 break
                         except ValueError:
                             continue
                 
                 if not found_valid_text:
-                    # Se não achou texto válido, loga o que o bot viu no innerHTML
-                    print(f"⚠️ [{nome_log}] DEBUG: Conteúdo lido vazio/inválido. Tentativas (innerHTML): {first_payout.get_attribute('innerHTML')}")
+                    # Log para debug, caso o problema persista
+                    # print(f"⚠️ [{nome_log}] DEBUG: Tentativas (innerHTML): {first_payout.get_attribute('innerHTML')}")
+                    pass
                 
             except (StaleElementReferenceException, NoSuchElementException, WebDriverException, Exception):
                 iframe = None 
                 payout_selector = None
-                driver.switch_to.default_content() # Volta para o default para evitar travamento
+                driver.switch_to.default_content() 
                 continue 
         # === FIM DA SEÇÃO CRÍTICA ===
         
@@ -398,7 +394,7 @@ if __name__ == "__main__":
         sys.exit()
     
     print("==============================================")
-    print("    GOATHBOT V8 - FIX LEITURA FINAL")
+    print("    GOATHBOT V9 - SOLUÇÃO FINAL (24H)  ")
     print("==============================================")
 
     while True:
