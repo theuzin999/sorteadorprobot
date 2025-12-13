@@ -1,85 +1,62 @@
-import os
-import sys
-import pytz
-import logging
-import threading
-import traceback
-import subprocess
-from time import sleep, time
-from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import StaleElementReferenceException, TimeoutException, NoSuchElementException, WebDriverException
 from webdriver_manager.chrome import ChromeDriverManager
-from webdriver_manager.core.os_manager import ChromeType 
-
-# Configurações de terceiros (Firebase)
+from time import sleep, time
+from datetime import datetime, date
+from selenium.common.exceptions import StaleElementReferenceException, WebDriverException, NoSuchElementException
 import firebase_admin
 from firebase_admin import credentials, db
+import os
+import pytz
+import sys
+import subprocess
+import threading
+import traceback
 
 # =============================================================
 # ⚠️ CONTROLE GLOBAL DE THREADS E DRIVER
 # =============================================================
 DRIVER_LOCK = threading.Lock() 
-STOP_EVENT = threading.Event() 
+STOP_EVENT = threading.Event() # Evento para sinalizar reinício geral
 
 # =============================================================
-# 🔥 GOATHBOT V10 - FUSÃO E ESTABILIDADE
+# 🔥 CONFIGURAÇÃO FIREBASE
 # =============================================================
 SERVICE_ACCOUNT_FILE = 'serviceAccountKey.json'
 DATABASE_URL = 'https://history-dashboard-a70ee-default-rtdb.firebaseio.com'
-URL_DO_SITE = "https://www.goathbet.com"
 
-# CONFIGURAÇÃO DOS DOIS JOGOS
-CONFIG_BOTS = [
-    {
-        "nome": "ORIGINAL",
-        "link": "https://www.goathbet.com/pt/casino/spribe/aviator",
-        "firebase_path": "history"
-    },
-    {
-        "nome": "AVIATOR 2",
-        "link": "https://www.goathbet.com/pt/casino/spribe/aviator-2",
-        "firebase_path": "aviator2"
-    }
-]
-
-logging.getLogger('WDM').setLevel(logging.ERROR)
-os.environ['WDM_LOG_LEVEL'] = '0'
-
-EMAIL = os.getenv("EMAIL")
-PASSWORD = os.getenv("PASSWORD")
-TZ_BR = pytz.timezone("America/Sao_Paulo")
-
-# Configurações Turbo
-POLLING_INTERVAL = 0.5 
-TEMPO_MAX_INATIVIDADE = 360     
-
-# Seletores mais estáveis e diretos (Foco no elemento com o número)
-FIRST_PAYOUT_SELECTORS_V10 = [
-    ".bubble-multiplier:first-child",                     
-    ".payout:first-child",                                 
-    "app-stats-widget .payout:first-child",               
-    "app-history-item:first-child .bubble-multiplier",    
-    "//div[starts-with(@class, 'bubble-multiplier')][1]", 
-]
-
-
-# =============================================================
-# 🔧 FIREBASE E AUXILIARES (Sem mudanças)
-# =============================================================
 try:
     if not firebase_admin._apps:
         cred = credentials.Certificate(SERVICE_ACCOUNT_FILE)
         firebase_admin.initialize_app(cred, {'databaseURL': DATABASE_URL})
-    print("✅ Conexão Firebase estabelecida.")
+    print("✅ Firebase Admin SDK inicializado.")
 except Exception as e:
-    print(f"\n❌ ERRO CRÍTICO NO FIREBASE: {e}")
+    print(f"\n❌ ERRO CONEXÃO FIREBASE: {e}")
     sys.exit()
 
+# =============================================================
+# ⚙️ VARIÁVEIS 
+# =============================================================
+URL_DO_SITE = "https://www.goathbet.com"
+
+LINK_AVIATOR_ORIGINAL = "https://www.goathbet.com/pt/casino/spribe/aviator"
+LINK_AVIATOR_2 = "https://www.goathbet.com/pt/casino/spribe/aviator-2"
+FIREBASE_PATH_ORIGINAL = "history"
+FIREBASE_PATH_2 = "aviator2"
+
+EMAIL = os.getenv("EMAIL")
+PASSWORD = os.getenv("PASSWORD")
+
+POLLING_INTERVAL = 0.05       
+TEMPO_MAX_INATIVIDADE = 360 # 6 minutos
+TZ_BR = pytz.timezone("America/Sao_Paulo")
+
+# =============================================================
+# 🔧 FUNÇÕES AUXILIARES
+# =============================================================
 def getColorClass(value):
     try:
         m = float(value)
@@ -89,38 +66,34 @@ def getColorClass(value):
         return "default-bg"
     except: return "default-bg"
 
-def enviar_firebase_async(path, data, nome_jogo):
+def enviar_firebase_async(path, data):
     def _send():
         try:
-            key = datetime.now(TZ_BR).strftime("%Y-%m-%d_%H-%M-%S-%f").replace('.', '')
-            db.reference(f"{path}/{key}").set(data)
-            print(f"🔥 [{nome_jogo.upper()}] ENVIADO: {data['multiplier']}x às {data['time']}")
+            db.reference(path).set(data)
+            nome_jogo = path.split('/')[0].upper()
+            if nome_jogo == "HISTORY": nome_jogo = "AVIATOR 1"
+            print(f"🔥 {nome_jogo}: {data['multiplier']}x às {data['time']}")
         except Exception:
             pass 
     threading.Thread(target=_send).start()
 
 def verificar_modais_bloqueio(driver):
-    xpaths = [
-        "//button[contains(., 'Sim')]", 
-        "//button[@data-age-action='yes']", 
-        "//div[contains(text(), '18')]/following::button[1]",
-        "//button[contains(., 'Aceitar')]",
-        "//button[contains(., 'Fechar')]" 
-    ]
-    for xp in xpaths:
+    botoes = ["//button[contains(., 'Sim')]", "//button[contains(., 'Aceitar')]", "//button[contains(., 'Fechar')]"]
+    for xpath in botoes:
         try:
-            btn = driver.find_element(By.XPATH, xp)
+            btn = driver.find_element(By.XPATH, xpath)
             if btn.is_displayed(): 
-                driver.execute_script("arguments[0].click();", btn)
+                btn.click()
                 sleep(0.5)
         except: pass
 
 # =============================================================
-# 🛠️ DRIVER E NAVEGAÇÃO (Com correção do Chromium)
+# 🚀 DRIVER (ADAPTADO PARA DOCKER/SQUARE CLOUD)
 # =============================================================
 def initialize_driver_instance():
+    # Tenta matar processos antigos (manter para compatibilidade local)
     try:
-        if os.name == 'nt': 
+        if os.name == 'nt': # Windows
             subprocess.run("taskkill /f /im chromedriver.exe", shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
             subprocess.run("taskkill /f /im chrome.exe", shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
     except: pass
@@ -131,29 +104,24 @@ def initialize_driver_instance():
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-popup-blocking")
-    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--start-maximized")
     options.add_argument("--log-level=3")
     options.add_argument("--silent")
-    options.add_argument("user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    # Adicionando user-agent para evitar bloqueios simples
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36")
     
-    # ⚠️ FIX CRÍTICO PARA SQUARE CLOUD / LINUX
-    if os.path.exists("/usr/bin/chromium"):
-        options.binary_location = "/usr/bin/chromium"
-
+    # ⚠️ MUDANÇA CRUCIAL PARA AMBIENTE DOCKER 
+    # Aponta para o binário do Chrome instalado no Dockerfile
+    options.binary_location = "/usr/bin/google-chrome-stable" 
+    
     try:
-        print("🔧 Iniciando Driver (Modo Linux/Chromium)...")
-        service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
-        return webdriver.Chrome(service=service, options=options)
+        # No Docker, o ChromeDriver está no PATH.
+        return webdriver.Chrome(options=options)
     except Exception as e:
-        try:
-            print(f"⚠️ Erro ao usar Chromium fix: {e}. Tentando fallback...")
-            return webdriver.Chrome(options=options)
-        except Exception as e_fallback:
-            print(f"❌ Falha crítica ao iniciar Driver: {e_fallback}")
-            raise e_fallback 
+        print(f"❌ Erro ao iniciar WebDriver: {e}")
+        return None
 
-
-def setup_tabs_and_login(driver):
+def setup_tabs(driver):
     print("➡️ Acessando site e configurando abas...")
     
     try:
@@ -161,165 +129,129 @@ def setup_tabs_and_login(driver):
         sleep(5)
         verificar_modais_bloqueio(driver)
 
-        btns = driver.find_elements(By.XPATH, "//button[contains(., 'Entrar')] | //a[contains(@href, 'login')]") 
+        btns = driver.find_elements(By.XPATH, "//button[contains(., 'Entrar')]")
         if btns: 
-            driver.execute_script("arguments[0].click();", btns[0])
-            sleep(1)
+            btns[0].click()
+            sleep(2)
             
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "email"))).send_keys(EMAIL)
+        # Login
+        driver.find_element(By.NAME, "email").send_keys(EMAIL)
         driver.find_element(By.NAME, "password").send_keys(PASSWORD)
-        sleep(0.5)
+        sleep(1)
         driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
         print("✅ Login enviado.")
-        sleep(8) 
-        verificar_modais_bloqueio(driver) 
+        sleep(8) # Tempo maior para login processar
     except Exception as e:
-        print(f"⚠️ Aviso no login ou popups: {e}")
+        print(f"⚠️ Aviso no login: {e}")
 
-    # Configura Abas
-    handles = {}
-    config1 = CONFIG_BOTS[0]
-    driver.get(config1["link"])
+    # Aba 1
+    driver.get(LINK_AVIATOR_ORIGINAL)
     sleep(5)
-    handles[config1["firebase_path"]] = driver.current_window_handle
-    print(f"✅ Aba {config1['nome']} configurada.")
+    handle_original = driver.current_window_handle
+    print(f"✅ Aba Aviator 1 configurada.")
 
-    config2 = CONFIG_BOTS[1]
+    # Aba 2
     driver.execute_script("window.open('');")
-    new_handle = [h for h in driver.window_handles if h != driver.current_window_handle][0]
+    handles = driver.window_handles
+    handle_aviator2 = [h for h in handles if h != handle_original][0]
     
-    driver.switch_to.window(new_handle)
-    driver.get(config2["link"])
+    driver.switch_to.window(handle_aviator2)
+    driver.get(LINK_AVIATOR_2)
     sleep(5)
-    handles[config2["firebase_path"]] = driver.current_window_handle
-    print(f"✅ Aba {config2['nome']} configurada.")
+    print(f"✅ Aba Aviator 2 configurada.")
     
-    driver.switch_to.window(handles[config1["firebase_path"]]) 
+    driver.switch_to.window(handle_original) 
     
-    return handles
+    return {
+        FIREBASE_PATH_ORIGINAL: handle_original,
+        FIREBASE_PATH_2: handle_aviator2
+    }
 
 # =============================================================
-# 🎮 BUSCA DE ELEMENTOS V10 (A busca mais robusta)
+# 🎮 BUSCA DE ELEMENTOS
 # =============================================================
-def find_game_elements_v10(driver, game_handle, nome_log):
+def find_game_elements_safe(driver):
     try:
-        driver.switch_to.window(game_handle)
-        driver.switch_to.default_content()
-        
-        # 1. Encontra o iframe principal
-        iframe = WebDriverWait(driver, 15).until( # Aumentei o timeout para 15s
-            EC.presence_of_element_located((By.XPATH, '//iframe[contains(@src, "spribe") or contains(@src, "aviator")]'))
-        )
-        driver.switch_to.frame(iframe) 
-        
-        # 2. Varre os seletores para encontrar o elemento do multiplicador
-        for selector in FIRST_PAYOUT_SELECTORS_V10:
-            try:
-                by_type = By.CSS_SELECTOR if not selector.startswith('//') else By.XPATH
-                # Tenta localizar o elemento interno em 5 segundos
-                element = WebDriverWait(driver, 5).until(EC.presence_of_element_located((by_type, selector)))
-                
-                # 3. Faz uma leitura rápida para confirmar se não é um container vazio
-                test_text = element.get_attribute("innerText")
-                if test_text and test_text.strip().replace('x','').replace(',', '.').replace('.', '', 1).isdigit():
-                    print(f"🎯 [{nome_log}] Conexão Estabelecida! Seletor: '{selector}'")
-                    return iframe, selector 
-                
-            except TimeoutException:
-                continue
-            except NoSuchElementException:
-                continue
-            
-        print(f"❌ [{nome_log}] NENHUM multiplicador válido encontrado após varrer todos os seletores.")
-        return None, None 
-
-    except Exception as e:
-        # Erro de 'no such element' ou 'timeout' cai aqui
-        print(f"❌ [{nome_log}] Erro durante a busca de elementos: {e}")
+        iframe = driver.find_element(By.XPATH, '//iframe[contains(@src, "spribe") or contains(@src, "aviator")]')
+        driver.switch_to.frame(iframe)
+        hist = driver.find_element(By.CSS_SELECTOR, "app-stats-widget, .payouts-block")
+        return iframe, hist
+    except:
         return None, None
 
-# =============================================================
-# 🔄 LOOP DE CAPTURA COM FIX DE LEITURA (THREAD)
-# =============================================================
-def start_bot_thread(driver, bot_config: dict, game_handle: str):
-    nome_log = bot_config['nome']
-    firebase_path = bot_config['firebase_path']
-    print(f"🚀 THREAD INICIADA: {nome_log} -> {firebase_path}")
+def initialize_game_elements_initial(driver, game_handle):
+    with DRIVER_LOCK:
+        try:
+            driver.switch_to.window(game_handle)
+            driver.switch_to.default_content()
+            iframe = WebDriverWait(driver, 20).until( 
+                EC.presence_of_element_located((By.XPATH, '//iframe[contains(@src, "spribe") or contains(@src, "aviator")]'))
+            )
+            driver.switch_to.frame(iframe)
+            hist = WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "app-stats-widget, .payouts-block"))
+            )
+            return iframe, hist
+        except:
+            return None, None
 
-    # Inicialização (usa a busca robusta)
-    iframe, payout_selector = find_game_elements_v10(driver, game_handle, nome_log)
+# =============================================================
+# 🔄 LOOP DE CAPTURA
+# =============================================================
+def start_bot(driver, game_handle: str, firebase_path: str):
+    nome_log = "AVIATOR 1" if "history" in firebase_path else "AVIATOR 2"
+    print(f"🚀 INICIADO: {nome_log}")
+
+    iframe, hist_element = initialize_game_elements_initial(driver, game_handle)
+    
     if not iframe:
-        print(f"🚨 [{nome_log}] Falha inicial ao carregar. Tentando recuperar no loop...")
+        print(f"🚨 Falha ao carregar {nome_log}. Tentando recuperar no loop.")
 
     LAST_SENT = None
     ULTIMO_MULTIPLIER_TIME = time()
-    
-    while not STOP_EVENT.is_set():
+
+    while not STOP_EVENT.is_set(): # Verifica se o evento de parada foi acionado
         raw_text = None
         
-        # === SEÇÃO CRÍTICA (Acesso ao Driver) ===
+        # === SEÇÃO CRÍTICA ===
         with DRIVER_LOCK:
-            if STOP_EVENT.is_set(): break
+            if STOP_EVENT.is_set(): break # Verificação dupla
 
             try:
                 driver.switch_to.window(game_handle)
                 
-                # Re-busca se os elementos sumiram ou não foram encontrados
-                if not iframe or not payout_selector:
-                    iframe, payout_selector = find_game_elements_v10(driver, game_handle, nome_log)
-                    if not iframe: raise Exception("Falha ao localizar elementos.")
+                if not iframe or not hist_element:
+                    iframe, hist_element = find_game_elements_safe(driver)
+                    if not iframe: raise Exception("Frame perdido")
 
-                # Tenta entrar no iframe
-                driver.switch_to.frame(iframe)
+                try:
+                    driver.switch_to.frame(iframe) 
+                except:
+                    iframe, hist_element = find_game_elements_safe(driver)
+                    if iframe: driver.switch_to.frame(iframe)
 
-                by_type = By.CSS_SELECTOR if not payout_selector.startswith('//') else By.XPATH
-                first_payout = driver.find_element(by_type, payout_selector)
+                first_payout = hist_element.find_element(By.CSS_SELECTOR, ".payout:first-child, .bubble-multiplier:first-child")
+                raw_text = first_payout.get_attribute("innerText")
                 
-                # *** FIX CRÍTICO V9/V10: LEITURA ABRANGENTE ***
-                text_candidates = [
-                    first_payout.text,
-                    first_payout.get_attribute("innerText"),
-                    first_payout.get_attribute("textContent"),
-                    first_payout.get_attribute("innerHTML")
-                ]
-                
-                found_valid_text = False
-                for t in text_candidates:
-                    if t:
-                        temp_clean = t.strip().lower().replace('x', '').replace(',', '.')
-                        try:
-                            if float(temp_clean) >= 1.0: 
-                                raw_text = t
-                                found_valid_text = True
-                                break
-                        except ValueError:
-                            continue
-                
-                if not found_valid_text:
-                    # Se não achou texto válido, o loop continua e tenta novamente.
-                    pass
-                
-            except (StaleElementReferenceException, NoSuchElementException, WebDriverException, Exception):
+            except (StaleElementReferenceException, NoSuchElementException):
                 iframe = None 
-                payout_selector = None
-                driver.switch_to.default_content() 
+                hist_element = None
                 continue 
+            except Exception:
+                iframe = None
+                continue
         # === FIM DA SEÇÃO CRÍTICA ===
         
         # PROCESSAMENTO
         if raw_text:
-            clean_text = raw_text.strip().lower().replace('x', '').replace(',', '.')
+            clean_text = raw_text.strip().lower().replace('x', '')
             
             if clean_text:
                 try:
                     novo_valor = float(clean_text)
-                except ValueError:
-                    continue 
+                except: continue 
 
                 if novo_valor != LAST_SENT:
-                    if novo_valor < 1.0:
-                        continue 
-                        
                     now_br = datetime.now(TZ_BR)
                     
                     payload = {
@@ -329,21 +261,22 @@ def start_bot_thread(driver, bot_config: dict, game_handle: str):
                         "date": now_br.strftime("%Y-%m-%d")
                     }
                     
-                    enviar_firebase_async(firebase_path, payload, nome_log)
+                    key = now_br.strftime("%Y-%m-%d_%H-%M-%S-%f")
+                    enviar_firebase_async(f"{firebase_path}/{key}", payload)
 
                     LAST_SENT = novo_valor
                     ULTIMO_MULTIPLIER_TIME = time()
-        
-        # 1. Check Inatividade (6 minutos)
+
+        # REINÍCIO POR INATIVIDADE (6 MINUTOS)
         if (time() - ULTIMO_MULTIPLIER_TIME) > TEMPO_MAX_INATIVIDADE:
-            print(f"🚨 [{nome_log}] INATIVIDADE ({TEMPO_MAX_INATIVIDADE}s). SOLICITANDO REINÍCIO GERAL...")
-            STOP_EVENT.set() 
+            print(f"🚨 {nome_log}: SEM DADOS HÁ 6 MIN. SOLICITANDO REINÍCIO DO DRIVER...")
+            STOP_EVENT.set() # Avisa a thread principal e a outra thread para parar
             return 
         
-        # 2. Reinício Diário (00:00)
-        now_br = datetime.now(TZ_BR)
-        if now_br.hour == 0 and now_br.minute <= 5: 
-            print(f"⏰ [{nome_log}] REINÍCIO DIÁRIO DETECTADO. SOLICITANDO REINÍCIO GERAL...")
+        # REINÍCIO AS 23:59 (REINÍCIO DIÁRIO)
+        now = datetime.now(TZ_BR)
+        if now.hour == 23 and now.minute == 59:
+            print(f"⏰ 23:59 Detectado em {nome_log}. SOLICITANDO REINÍCIO DIÁRIO...")
             STOP_EVENT.set()
             return
             
@@ -353,29 +286,35 @@ def start_bot_thread(driver, bot_config: dict, game_handle: str):
 # 🚀 SUPERVISOR (MAIN LOOP)
 # =============================================================
 def rodar_ciclo_monitoramento():
+    """Função que configura e roda um ciclo do bot até que precise reiniciar"""
     DRIVER = None
-    STOP_EVENT.clear() 
+    STOP_EVENT.clear() # Limpa o evento de parada para começar novo ciclo
     
     try:
         print("\n🔵 INICIANDO NOVO CICLO DO NAVEGADOR...")
         DRIVER = initialize_driver_instance()
-        handles = setup_tabs_and_login(DRIVER)
         
-        threads = []
-        for config in CONFIG_BOTS:
-            path = config["firebase_path"]
-            handle = handles.get(path)
-            if handle:
-                t = threading.Thread(target=start_bot_thread, args=(DRIVER, config, handle))
-                t.start()
-                threads.append(t)
-            else:
-                print(f"❌ Handle não encontrado para {config['nome']}.")
+        if DRIVER is None:
+            print("❌ Falha ao inicializar o DRIVER. Tentando novamente no próximo ciclo.")
+            return
+
+        handles = setup_tabs(DRIVER)
+        
+        handle_original = handles[FIREBASE_PATH_ORIGINAL]
+        handle_aviator2 = handles[FIREBASE_PATH_2]
 
         print("⏳ Monitoramento iniciado (Threads)...")
         
-        while any(t.is_alive() for t in threads):
+        t1 = threading.Thread(target=start_bot, args=(DRIVER, handle_original, FIREBASE_PATH_ORIGINAL))
+        t2 = threading.Thread(target=start_bot, args=(DRIVER, handle_aviator2, FIREBASE_PATH_2))
+
+        t1.start()
+        t2.start()
+
+        # O Supervisor fica vigiando o STOP_EVENT
+        while t1.is_alive() or t2.is_alive():
             if STOP_EVENT.is_set():
+                # Se alguém pediu parada, aguarda um pouco e sai do loop
                 break
             sleep(1)
             
@@ -385,26 +324,27 @@ def rodar_ciclo_monitoramento():
         print(f"\n❌ ERRO NO CICLO: {e}")
         traceback.print_exc()
     finally:
+        # Garante que tudo fecha
         STOP_EVENT.set() 
-        for t in threads:
-            if t.is_alive(): t.join(timeout=2) 
-
         if DRIVER:
             try:
                 DRIVER.quit()
                 print("🗑️ Driver encerrado com sucesso.")
             except: pass
-        sleep(5) 
+        sleep(5) # Pausa respiratória antes de reabrir
 
 if __name__ == "__main__":
     if not EMAIL or not PASSWORD:
         print("❗ Configure EMAIL e PASSWORD nas variáveis de ambiente.")
-        sys.exit()
+        # Não usamos sys.exit() aqui para que o container não feche
+        # Apenas para que o loop continue e tente de novo
+        sleep(10)
     
     print("==============================================")
-    print("    GOATHBOT V10 - FUSÃO E ESTABILIDADE  ")
+    print("      SUPERVISOR DE BOT INICIADO (24H)       ")
     print("==============================================")
 
+    # O loop infinito que mantém o bot rodando 24h e reiniciando
     while True:
         try:
             rodar_ciclo_monitoramento()
