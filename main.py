@@ -3,10 +3,9 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
 from time import sleep, time
 from datetime import datetime
-from selenium.common.exceptions import StaleElementReferenceException, NoSuchElementException
+from selenium.common.exceptions import StaleElementReferenceException, NoSuchElementException, TimeoutException
 import firebase_admin
 from firebase_admin import credentials, db
 import os
@@ -24,7 +23,7 @@ DRIVER_LOCK = threading.Lock()
 STOP_EVENT = threading.Event() 
 
 # =============================================================
-# 🔥 GOATHBOT V6.2 - DUAL MODE (CORREÇÃO DE ESTABILIDADE)
+# 🔥 GOATHBOT V6.3 - DUAL MODE (COM RETENTATIVA DE INIT)
 # =============================================================
 SERVICE_ACCOUNT_FILE = 'serviceAccountKey.json'
 DATABASE_URL = 'https://history-dashboard-a70ee-default-rtdb.firebaseio.com'
@@ -53,7 +52,7 @@ PASSWORD = os.getenv("PASSWORD")
 TZ_BR = pytz.timezone("America/Sao_Paulo")
 
 # Configurações Turbo
-POLLING_INTERVAL = 0.05         # Mais rápido para coletar o multiplicador
+POLLING_INTERVAL = 0.05         
 TEMPO_MAX_INATIVIDADE = 360     # 6 minutos (360 segundos)
 
 # =============================================================
@@ -81,7 +80,6 @@ def enviar_firebase_async(path, data, nome_jogo):
     """Envia dados ao Firebase em uma thread separada (melhor performance)"""
     def _send():
         try:
-            # Usando timestamp como chave para garantir unicidade e ordem
             key = datetime.now(TZ_BR).strftime("%Y-%m-%d_%H-%M-%S-%f").replace('.', '')
             db.reference(f"{path}/{key}").set(data)
             print(f"🔥 [{nome_jogo.upper()}] {data['multiplier']}x às {data['time']}")
@@ -112,11 +110,10 @@ def verificar_modais_bloqueio(driver):
 def initialize_driver_instance():
     # Tenta matar processos antigos para liberar memória (melhor para VPS/servidor)
     try:
-        if os.name == 'nt': # Windows
+        if os.name == 'nt': 
             subprocess.run("taskkill /f /im chromedriver.exe", shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
             subprocess.run("taskkill /f /im chrome.exe", shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-        else: # Linux/Outros
-             # Tenta matar processos em execução (útil em ambientes como Render/Heroku)
+        else: 
             subprocess.run("pkill -f 'chromedriver'", shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
             subprocess.run("pkill -f 'chrome'", shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
     except: pass
@@ -125,7 +122,7 @@ def initialize_driver_instance():
     options.page_load_strategy = 'eager'
     options.add_argument("--headless=new") 
     options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage") # CRUCIAL para Linux/Containers
+    options.add_argument("--disable-dev-shm-usage") 
     options.add_argument("--disable-popup-blocking")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--log-level=3")
@@ -133,13 +130,13 @@ def initialize_driver_instance():
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36")
     
     try:
-        # Padrão para ambientes VPS/Online que têm o Chrome e ChromeDriver no PATH
+        # Padrão para ambientes VPS/Online
         return webdriver.Chrome(options=options)
     except Exception:
-        # Fallback para ambientes locais ou que precisam do WDM (não recomendado para cloud)
-        # service = Service(ChromeDriverManager().install())
+        # Fallback (você pode remover este bloco se estiver usando uma imagem Docker robusta)
+        # from webdriver_manager.chrome import ChromeDriverManager
+        # service = Service(ChromeDriverManager().install()) 
         # return webdriver.Chrome(service=service, options=options)
-        print("⚠️ Aviso: Falha ao iniciar driver padrão. Verifique a instalação do Chrome/ChromeDriver no PATH.")
         return webdriver.Chrome(options=options)
 
 
@@ -158,13 +155,12 @@ def setup_tabs_and_login(driver):
             driver.execute_script("arguments[0].click();", btns[0])
             sleep(1)
             
-        # Preenche e envia
         driver.find_element(By.NAME, "email").send_keys(EMAIL)
         driver.find_element(By.NAME, "password").send_keys(PASSWORD)
         sleep(0.5)
         driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
         print("✅ Login enviado.")
-        sleep(5) 
+        sleep(8) # Aumentei o sleep para garantir que o login e redirect terminem
     except Exception as e:
         print(f"⚠️ Aviso no login: {e}")
 
@@ -181,7 +177,6 @@ def setup_tabs_and_login(driver):
     # Aba 2
     config2 = CONFIG_BOTS[1]
     driver.execute_script("window.open('');")
-    # Pega o novo handle: o que não é o handle atual
     new_handle = [h for h in driver.window_handles if h != driver.current_window_handle][0]
     
     driver.switch_to.window(new_handle)
@@ -190,31 +185,45 @@ def setup_tabs_and_login(driver):
     handles[config2["firebase_path"]] = driver.current_window_handle
     print(f"✅ Aba {config2['nome']} configurada.")
     
-    # Volta para o primeiro handle (Para o monitoramento começar nele)
     driver.switch_to.window(handles[config1["firebase_path"]]) 
     
     return handles
 
 # =============================================================
-# 🎮 BUSCA DE ELEMENTOS
+# 🎮 BUSCA DE ELEMENTOS (CORREÇÃO DE ESTABILIDADE)
 # =============================================================
 def find_game_elements(driver, game_handle):
-    """Busca ou re-busca os elementos do iframe e histórico para a aba atual"""
-    try:
-        driver.switch_to.window(game_handle)
-        driver.switch_to.default_content()
+    """Busca ou re-busca os elementos do iframe e histórico para a aba atual com retentativa."""
+    MAX_RETRIES = 3
+    
+    for attempt in range(MAX_RETRIES):
+        try:
+            driver.switch_to.window(game_handle)
+            driver.switch_to.default_content()
+            
+            # Tenta encontrar o iframe por até 15 segundos (AUMENTADO)
+            iframe = WebDriverWait(driver, 15).until( 
+                EC.presence_of_element_located((By.XPATH, '//iframe[contains(@src, "spribe") or contains(@src, "aviator")]'))
+            )
+            driver.switch_to.frame(iframe)
+            
+            # Tenta encontrar o histórico
+            hist = WebDriverWait(driver, 10).until( 
+                EC.presence_of_element_located((By.CSS_SELECTOR, "app-stats-widget, .payouts-block, .payouts-block__list"))
+            )
+            return iframe, hist
+        except TimeoutException:
+            # Caso o iframe ou hist demore muito
+            print(f"    [Retry {attempt + 1}/{MAX_RETRIES}] Timeout buscando elementos. Tentando re-localizar...")
+        except Exception:
+            # Outras falhas, como StaleElementReference, etc.
+            pass
         
-        iframe = WebDriverWait(driver, 10).until( 
-            EC.presence_of_element_located((By.XPATH, '//iframe[contains(@src, "spribe") or contains(@src, "aviator")]'))
-        )
-        driver.switch_to.frame(iframe)
+        if attempt < MAX_RETRIES - 1:
+            sleep(2) # Pausa antes de retentar
         
-        hist = WebDriverWait(driver, 5).until( 
-            EC.presence_of_element_located((By.CSS_SELECTOR, "app-stats-widget, .payouts-block, .payouts-block__list"))
-        )
-        return iframe, hist
-    except:
-        return None, None
+    return None, None # Retorna None se todas as retentativas falharem
+
 
 # =============================================================
 # 🔄 LOOP DE CAPTURA INDIVIDUAL (THREAD)
@@ -225,8 +234,10 @@ def start_bot_thread(driver, bot_config: dict, game_handle: str):
     firebase_path = bot_config['firebase_path']
     print(f"🚀 THREAD INICIADA: {nome_log}")
 
+    # AQUI AGORA TEREMOS O MECANISMO DE RETENTATIVA
     iframe, hist_element = find_game_elements(driver, game_handle)
     if not iframe:
+        # Se a busca inicial falhar, ele vai entrar no loop e tentar novamente
         print(f"🚨 Falha inicial ao carregar {nome_log}. Tentando recuperar no loop...")
 
     LAST_SENT = None
@@ -235,36 +246,31 @@ def start_bot_thread(driver, bot_config: dict, game_handle: str):
     while not STOP_EVENT.is_set():
         raw_text = None
         
-        # === SEÇÃO CRÍTICA (Acesso ao Driver) ===
         with DRIVER_LOCK:
             if STOP_EVENT.is_set(): break
 
             try:
                 driver.switch_to.window(game_handle)
                 
-                # Re-busca se os elementos sumiram
+                # Re-busca se os elementos sumiram (usa a função robusta)
                 if not iframe or not hist_element:
                     iframe, hist_element = find_game_elements(driver, game_handle)
                     if not iframe: raise Exception("Falha ao localizar elementos.")
 
-                # Tenta entrar no iframe
                 try: driver.switch_to.frame(iframe)
                 except: pass
 
-                # Pega o primeiro multiplicador
                 first_payout = hist_element.find_element(By.CSS_SELECTOR, ".payout:first-child, .bubble-multiplier:first-child")
                 raw_text = first_payout.get_attribute("innerText")
                 
-            except (StaleElementReferenceException, NoSuchElementException, Exception) as e:
+            except (StaleElementReferenceException, NoSuchElementException, Exception):
                 # Sinaliza que precisamos re-buscar no próximo ciclo
                 iframe = None 
                 hist_element = None
                 continue 
-        # === FIM DA SEÇÃO CRÍTICA ===
         
         # PROCESSAMENTO
         if raw_text:
-            # Garante que . seja usado como separador decimal
             clean_text = raw_text.strip().lower().replace('x', '').replace(',', '.')
             
             if clean_text:
@@ -293,7 +299,7 @@ def start_bot_thread(driver, bot_config: dict, game_handle: str):
             STOP_EVENT.set() 
             return 
         
-        # 2. Reinício Diário (23:59) - IGUAL AO botaviator2.py
+        # 2. Reinício Diário (23:59)
         now_br = datetime.now(TZ_BR)
         if now_br.hour == 23 and now_br.minute == 59: 
             print(f"⏰ {nome_log}: 23:59 DETECTADO. SOLICITANDO REINÍCIO GERAL...")
@@ -328,7 +334,6 @@ def rodar_ciclo_monitoramento():
 
         print("⏳ Monitoramento iniciado (Threads)...")
         
-        # O Supervisor fica vigiando o STOP_EVENT
         while any(t.is_alive() for t in threads):
             if STOP_EVENT.is_set():
                 break
@@ -340,7 +345,6 @@ def rodar_ciclo_monitoramento():
         print(f"\n❌ ERRO NO CICLO: {e}")
         traceback.print_exc()
     finally:
-        # Garante que as threads parem (timeout para não travar o loop principal)
         STOP_EVENT.set() 
         for t in threads:
             if t.is_alive(): 
@@ -360,7 +364,7 @@ if __name__ == "__main__":
         sys.exit()
     
     print("==============================================")
-    print("      GOATHBOT V6.2 - SUPERVISOR INICIADO     ")
+    print("      GOATHBOT V6.3 - SUPERVISOR INICIADO     ")
     print("==============================================")
 
     while True:
