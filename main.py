@@ -17,6 +17,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import StaleElementReferenceException, NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
+from webdriver_manager.core.os_manager import ChromeType # <--- IMPORTANTE
 
 import firebase_admin
 from firebase_admin import credentials, db
@@ -33,10 +34,8 @@ STOP_EVENT = threading.Event()
 SERVICE_ACCOUNT_FILE = 'serviceAccountKey.json'
 DATABASE_URL = 'https://history-dashboard-a70ee-default-rtdb.firebaseio.com'
 
-# Verifica se o arquivo de credenciais existe antes de tentar conectar
 if not os.path.exists(SERVICE_ACCOUNT_FILE):
     print(f"❌ ERRO CRÍTICO: O arquivo {SERVICE_ACCOUNT_FILE} não foi encontrado!")
-    print("➡️  Faça o upload dele na Square Cloud junto com o main.py")
     sys.exit(1)
 
 try:
@@ -49,9 +48,8 @@ except Exception as e:
     sys.exit(1)
 
 # =============================================================
-# ⚙️ VARIÁVEIS DE AMBIENTE (Square Cloud)
+# ⚙️ VARIÁVEIS DE AMBIENTE
 # =============================================================
-# Configure estas variáveis na aba "Environment Variables" da Square Cloud ou no squarecloud.app
 EMAIL = os.getenv("EMAIL")
 PASSWORD = os.getenv("PASSWORD")
 
@@ -65,7 +63,7 @@ LINK_AVIATOR_2 = "https://www.goathbet.com/pt/casino/spribe/aviator-2"
 FIREBASE_PATH_ORIGINAL = "history"
 FIREBASE_PATH_2 = "aviator2"
 
-POLLING_INTERVAL = 0.1  # Aumentado levemente para poupar CPU na nuvem
+POLLING_INTERVAL = 0.1  
 TEMPO_MAX_INATIVIDADE = 360 
 TZ_BR = pytz.timezone("America/Sao_Paulo")
 
@@ -102,10 +100,10 @@ def verificar_modais_bloqueio(driver):
         except: pass
 
 # =============================================================
-# 🚀 DRIVER OTIMIZADO PARA NUVEM (RAM FRIENDLY)
+# 🚀 DRIVER OTIMIZADO PARA NUVEM (CORREÇÃO DE VERSÃO)
 # =============================================================
 def initialize_driver_instance():
-    # Limpeza de processos apenas se for Windows (evita erro no Linux)
+    # Limpeza de processos apenas se for Windows
     if os.name == 'nt':
         try:
             subprocess.run("taskkill /f /im chromedriver.exe", shell=True, stderr=subprocess.DEVNULL)
@@ -114,37 +112,37 @@ def initialize_driver_instance():
 
     options = webdriver.ChromeOptions()
     
-    # --- OTIMIZAÇÕES DE MEMÓRIA CRÍTICAS PARA SQUARE CLOUD ---
+    # --- OTIMIZAÇÕES DE MEMÓRIA ---
     options.add_argument("--headless=new") 
     options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage") # Essencial para Docker/Linux
+    options.add_argument("--disable-dev-shm-usage") 
     options.add_argument("--disable-gpu")
     options.add_argument("--disable-extensions")
-    options.add_argument("--disable-infobars")
     options.add_argument("--mute-audio")
+    options.add_argument("--window-size=1366,768")
+    options.add_argument("--log-level=3")
+    options.add_argument("user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
-    # Bloquear imagens para economizar muita RAM e Banda
+    # ⚠️ CORREÇÃO CRÍTICA PARA SQUARE CLOUD / LINUX ⚠️
+    # O erro mostrou que o binário está aqui: /usr/bin/chromium
+    if os.path.exists("/usr/bin/chromium"):
+        options.binary_location = "/usr/bin/chromium"
+    elif os.path.exists("/usr/bin/google-chrome"):
+        options.binary_location = "/usr/bin/google-chrome"
+
+    # Bloquear imagens
     prefs = {
         "profile.managed_default_content_settings.images": 2,
         "profile.default_content_setting_values.notifications": 2,
         "profile.managed_default_content_settings.stylesheets": 2,
-        "profile.managed_default_content_settings.cookies": 1,
-        "profile.managed_default_content_settings.javascript": 1,
-        "profile.managed_default_content_settings.plugins": 1,
-        "profile.managed_default_content_settings.popups": 2,
-        "profile.managed_default_content_settings.geolocation": 2,
-        "profile.managed_default_content_settings.media_stream": 2,
     }
     options.add_experimental_option("prefs", prefs)
 
-    options.add_argument("--window-size=1366,768")
-    options.add_argument("--log-level=3")
-    options.add_argument("user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
-    
-    print("🔧 Iniciando Driver (Modo Linux/Cloud)...")
+    print("🔧 Iniciando Driver (Modo Linux/Chromium)...")
     try:
-        # Tenta instalar e rodar
-        service = Service(ChromeDriverManager().install())
+        # Usa ChromeType.CHROMIUM para forçar o manager a baixar a versão correta do driver
+        # compatível com o binário open-source instalado no Linux
+        service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
         return webdriver.Chrome(service=service, options=options)
     except Exception as e:
         print(f"❌ Falha ao iniciar Driver: {e}")
@@ -170,9 +168,9 @@ def setup_tabs(driver):
             sleep(1)
             driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
             print("✅ Login enviado.")
-            sleep(10) # Tempo seguro para o cloud processar
+            sleep(10)
         except Exception as e:
-            print(f"⚠️ Aviso login (pode já estar logado): {e}")
+            print(f"⚠️ Aviso login: {e}")
 
         # Aba 1
         driver.get(LINK_AVIATOR_ORIGINAL)
@@ -206,7 +204,6 @@ def setup_tabs(driver):
 # =============================================================
 def find_game_elements_safe(driver):
     try:
-        # Busca genérica para tentar achar o iframe
         iframe = driver.find_element(By.XPATH, '//iframe[contains(@src, "spribe") or contains(@src, "aviator")]')
         driver.switch_to.frame(iframe)
         hist = driver.find_element(By.CSS_SELECTOR, "app-stats-widget, .payouts-block")
@@ -217,7 +214,6 @@ def find_game_elements_safe(driver):
 def start_bot(driver, game_handle: str, firebase_path: str):
     nome_log = "AVIATOR 1" if "history" in firebase_path else "AVIATOR 2"
     
-    # Inicializa elementos
     iframe = None
     hist_element = None
     
@@ -238,7 +234,6 @@ def start_bot(driver, game_handle: str, firebase_path: str):
             try:
                 driver.switch_to.window(game_handle)
                 
-                # Se perdeu referência, tenta re-encontrar
                 if not iframe or not hist_element:
                     try:
                         driver.switch_to.default_content()
@@ -246,9 +241,7 @@ def start_bot(driver, game_handle: str, firebase_path: str):
                     iframe, hist_element = find_game_elements_safe(driver)
                     if not iframe: raise Exception("Frame perdido")
 
-                # Garante foco no frame
                 try:
-                    # Verifica se já está no frame procurando um elemento interno
                     hist_element.is_displayed()
                 except:
                     driver.switch_to.frame(iframe)
@@ -257,7 +250,6 @@ def start_bot(driver, game_handle: str, firebase_path: str):
                 raw_text = first_payout.get_attribute("innerText")
                 
             except Exception:
-                # Se der erro, força re-busca na próxima iteração
                 iframe = None
                 pass
         
@@ -280,16 +272,13 @@ def start_bot(driver, game_handle: str, firebase_path: str):
                         ULTIMO_MULTIPLIER_TIME = time()
                 except: pass
 
-        # Timeout de inatividade
         if (time() - ULTIMO_MULTIPLIER_TIME) > TEMPO_MAX_INATIVIDADE:
             print(f"🚨 {nome_log}: Inativo por {TEMPO_MAX_INATIVIDADE}s. Reiniciando...")
             STOP_EVENT.set()
             return 
         
-        # Reinício diário
         now = datetime.now(TZ_BR)
         if now.hour == 23 and now.minute == 59 and now.second < 10:
-            print(f"⏰ Reinício programado (23:59)...")
             STOP_EVENT.set()
             return
             
@@ -315,7 +304,7 @@ def rodar_ciclo_monitoramento():
 
         while t1.is_alive() or t2.is_alive():
             if STOP_EVENT.is_set(): break
-            sleep(2) # Verifica a cada 2s para não gastar CPU do supervisor
+            sleep(2)
             
     except Exception as e:
         print(f"❌ Erro Supervisor: {e}")
@@ -329,8 +318,7 @@ def rodar_ciclo_monitoramento():
             except: pass
 
 if __name__ == "__main__":
-    print("=== BOT AVIATOR ONLINE (SQUARE CLOUD) ===")
-    
+    print("=== BOT AVIATOR ONLINE (SQUARE CLOUD FIXED) ===")
     while True:
         try:
             rodar_ciclo_monitoramento()
