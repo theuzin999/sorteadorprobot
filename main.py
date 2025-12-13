@@ -1,5 +1,4 @@
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
@@ -23,7 +22,7 @@ DRIVER_LOCK = threading.Lock()
 STOP_EVENT = threading.Event() 
 
 # =============================================================
-# 🔥 GOATHBOT V6.3 - DUAL MODE (COM RETENTATIVA DE INIT)
+# 🔥 GOATHBOT V6.4 - DUAL MODE (COM CORREÇÃO DE INIT E OTIMIZAÇÃO DE RAM)
 # =============================================================
 SERVICE_ACCOUNT_FILE = 'serviceAccountKey.json'
 DATABASE_URL = 'https://history-dashboard-a70ee-default-rtdb.firebaseio.com'
@@ -108,7 +107,6 @@ def verificar_modais_bloqueio(driver):
 # 🛠️ DRIVER E NAVEGAÇÃO
 # =============================================================
 def initialize_driver_instance():
-    # Tenta matar processos antigos para liberar memória (melhor para VPS/servidor)
     try:
         if os.name == 'nt': 
             subprocess.run("taskkill /f /im chromedriver.exe", shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
@@ -129,14 +127,14 @@ def initialize_driver_instance():
     options.add_argument("--silent")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36")
     
+    # NOVAS OPÇÕES PARA ECONOMIA DE RAM
+    options.add_argument("--disable-gpu") 
+    options.add_argument("--disable-software-rasterizer") 
+    
     try:
-        # Padrão para ambientes VPS/Online
         return webdriver.Chrome(options=options)
     except Exception:
-        # Fallback (você pode remover este bloco se estiver usando uma imagem Docker robusta)
-        # from webdriver_manager.chrome import ChromeDriverManager
-        # service = Service(ChromeDriverManager().install()) 
-        # return webdriver.Chrome(service=service, options=options)
+        # Tenta iniciar driver sem service (confia no PATH)
         return webdriver.Chrome(options=options)
 
 
@@ -160,7 +158,7 @@ def setup_tabs_and_login(driver):
         sleep(0.5)
         driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
         print("✅ Login enviado.")
-        sleep(8) # Aumentei o sleep para garantir que o login e redirect terminem
+        sleep(8) 
     except Exception as e:
         print(f"⚠️ Aviso no login: {e}")
 
@@ -190,7 +188,7 @@ def setup_tabs_and_login(driver):
     return handles
 
 # =============================================================
-# 🎮 BUSCA DE ELEMENTOS (CORREÇÃO DE ESTABILIDADE)
+# 🎮 BUSCA DE ELEMENTOS (V6.4 - CORREÇÃO DE ESTABILIDADE)
 # =============================================================
 def find_game_elements(driver, game_handle):
     """Busca ou re-busca os elementos do iframe e histórico para a aba atual com retentativa."""
@@ -198,31 +196,30 @@ def find_game_elements(driver, game_handle):
     
     for attempt in range(MAX_RETRIES):
         try:
+            # 1. Troca de Foco (Reforçada)
             driver.switch_to.window(game_handle)
             driver.switch_to.default_content()
             
-            # Tenta encontrar o iframe por até 15 segundos (AUMENTADO)
-            iframe = WebDriverWait(driver, 15).until( 
+            # 2. Localiza o IFRAME (A espera foi aumentada para 20s para garantir o carregamento)
+            iframe = WebDriverWait(driver, 20).until( 
                 EC.presence_of_element_located((By.XPATH, '//iframe[contains(@src, "spribe") or contains(@src, "aviator")]'))
             )
             driver.switch_to.frame(iframe)
             
-            # Tenta encontrar o histórico
-            hist = WebDriverWait(driver, 10).until( 
-                EC.presence_of_element_located((By.CSS_SELECTOR, "app-stats-widget, .payouts-block, .payouts-block__list"))
+            # 3. Localiza o Histórico (Usando XPATH, mais tolerante a variações)
+            hist = WebDriverWait(driver, 15).until( 
+                EC.presence_of_element_located((By.XPATH, '//app-stats-widget | //div[contains(@class, "payouts-block")] | //div[contains(@class, "payouts-block__list")]'))
             )
             return iframe, hist
         except TimeoutException:
-            # Caso o iframe ou hist demore muito
-            print(f"    [Retry {attempt + 1}/{MAX_RETRIES}] Timeout buscando elementos. Tentando re-localizar...")
-        except Exception:
-            # Outras falhas, como StaleElementReference, etc.
-            pass
+            print(f"    [Retry {attempt + 1}/{MAX_RETRIES}] Timeout buscando elementos {game_handle}. Tentando re-localizar...")
+        except Exception as e:
+            print(f"    [Retry {attempt + 1}/{MAX_RETRIES}] Falha geral: {type(e).__name__}. Tentando novamente...")
         
         if attempt < MAX_RETRIES - 1:
-            sleep(2) # Pausa antes de retentar
+            sleep(3) 
         
-    return None, None # Retorna None se todas as retentativas falharem
+    return None, None 
 
 
 # =============================================================
@@ -234,7 +231,6 @@ def start_bot_thread(driver, bot_config: dict, game_handle: str):
     firebase_path = bot_config['firebase_path']
     print(f"🚀 THREAD INICIADA: {nome_log}")
 
-    # AQUI AGORA TEREMOS O MECANISMO DE RETENTATIVA
     iframe, hist_element = find_game_elements(driver, game_handle)
     if not iframe:
         # Se a busca inicial falhar, ele vai entrar no loop e tentar novamente
@@ -260,6 +256,7 @@ def start_bot_thread(driver, bot_config: dict, game_handle: str):
                 try: driver.switch_to.frame(iframe)
                 except: pass
 
+                # Localiza a "vela" (multiplicador)
                 first_payout = hist_element.find_element(By.CSS_SELECTOR, ".payout:first-child, .bubble-multiplier:first-child")
                 raw_text = first_payout.get_attribute("innerText")
                 
@@ -364,7 +361,7 @@ if __name__ == "__main__":
         sys.exit()
     
     print("==============================================")
-    print("      GOATHBOT V6.3 - SUPERVISOR INICIADO     ")
+    print("      GOATHBOT V6.4 - SUPERVISOR INICIADO     ")
     print("==============================================")
 
     while True:
