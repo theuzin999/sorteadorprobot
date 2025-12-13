@@ -27,7 +27,7 @@ DRIVER_LOCK = threading.Lock()
 STOP_EVENT = threading.Event() 
 
 # =============================================================
-# 🔥 GOATHBOT V7 - DUAL MODE (FIX LEITURA)
+# 🔥 GOATHBOT V8 - DUAL MODE (FIX LEITURA FINAL)
 # =============================================================
 SERVICE_ACCOUNT_FILE = 'serviceAccountKey.json'
 DATABASE_URL = 'https://history-dashboard-a70ee-default-rtdb.firebaseio.com'
@@ -58,15 +58,14 @@ TZ_BR = pytz.timezone("America/Sao_Paulo")
 POLLING_INTERVAL = 0.5 
 TEMPO_MAX_INATIVIDADE = 360     
 
-# Seletores mais agressivos (Mantive os mesmos que funcionaram)
-FIRST_PAYOUT_SELECTORS_V6 = [
-    ".payout:first-child",                              
-    ".bubble-multiplier:first-child",                   
-    "app-history-item:first-child .bubble-multiplier",
-    "//div[contains(@class, 'payout')][1]",
-    "//div[contains(@class, 'bubble-multiplier')][1]",
-    "//div[starts-with(@class, 'payout')][1]",
-    "app-stats-widget .payout:first-child"
+# Lista de Seletores Refinados V8: Foco no elemento que tem o número
+FIRST_PAYOUT_SELECTORS_V8 = [
+    ".payouts-block .payout:first-child",                 # Tenta achar o item dentro do bloco
+    "app-stats-widget .payout:first-child",               # Outra variação do container
+    ".bubble-multiplier:first-child",                     # O mais comum (o número puro)
+    "app-history-item:first-child .bubble-multiplier",    # Com o container da vela (item)
+    "//div[starts-with(@class, 'bubble-multiplier')][1]", # XPath mais específico para o número
+    "//div[contains(@class, 'payouts-block')]//div[starts-with(@class, 'payout')][1]" # Dentro do container
 ]
 
 
@@ -178,7 +177,7 @@ def setup_tabs_and_login(driver):
     except Exception as e:
         print(f"⚠️ Aviso no login ou popups: {e}")
 
-    # Configura Abas (sem mudanças)
+    # Configura Abas
     handles = {}
     config1 = CONFIG_BOTS[0]
     driver.get(config1["link"])
@@ -201,9 +200,9 @@ def setup_tabs_and_login(driver):
     return handles
 
 # =============================================================
-# 🎮 BUSCA DE ELEMENTOS V7 (Apenas para achar o seletor)
+# 🎮 BUSCA DE ELEMENTOS V8 (Apenas para achar o seletor)
 # =============================================================
-def find_game_elements_v7(driver, game_handle, nome_log):
+def find_game_elements_v8(driver, game_handle, nome_log):
     try:
         driver.switch_to.window(game_handle)
         driver.switch_to.default_content()
@@ -211,12 +210,14 @@ def find_game_elements_v7(driver, game_handle, nome_log):
         iframe = WebDriverWait(driver, 10).until( 
             EC.presence_of_element_located((By.XPATH, '//iframe[contains(@src, "spribe") or contains(@src, "aviator")]'))
         )
-        driver.switch_to.frame(iframe)
+        # ⚠️ FIX V8: Tenta entrar no iframe imediatamente para evitar 'stale'
+        driver.switch_to.frame(iframe) 
         
-        for selector in FIRST_PAYOUT_SELECTORS_V6:
+        for selector in FIRST_PAYOUT_SELECTORS_V8:
             try:
                 by_type = By.CSS_SELECTOR if not selector.startswith('//') else By.XPATH
-                WebDriverWait(driver, 3).until(EC.presence_of_element_located((by_type, selector)))
+                # Dá 5 segundos para o elemento interno carregar
+                WebDriverWait(driver, 5).until(EC.presence_of_element_located((by_type, selector)))
                 
                 print(f"🎯 [{nome_log}] Conexão Estabelecida! Seletor: '{selector}'")
                 return iframe, selector 
@@ -229,19 +230,18 @@ def find_game_elements_v7(driver, game_handle, nome_log):
         return None, None 
 
     except Exception as e:
-        # Erros como falha de stack trace (que vimos antes) caem aqui
         print(f"❌ [{nome_log}] Erro durante a busca de elementos: {e}")
         return None, None
 
 # =============================================================
-# 🔄 LOOP DE CAPTURA COM DEBUG DE LEITURA (THREAD)
+# 🔄 LOOP DE CAPTURA COM FIX DE LEITURA (THREAD)
 # =============================================================
 def start_bot_thread(driver, bot_config: dict, game_handle: str):
     nome_log = bot_config['nome']
     firebase_path = bot_config['firebase_path']
     print(f"🚀 THREAD INICIADA: {nome_log} -> {firebase_path}")
 
-    iframe, payout_selector = find_game_elements_v7(driver, game_handle, nome_log)
+    iframe, payout_selector = find_game_elements_v8(driver, game_handle, nome_log)
     if not iframe:
         print(f"🚨 [{nome_log}] Falha inicial ao carregar. Tentando recuperar no loop...")
 
@@ -260,16 +260,16 @@ def start_bot_thread(driver, bot_config: dict, game_handle: str):
                 
                 # Re-busca se os elementos sumiram ou não foram encontrados
                 if not iframe or not payout_selector:
-                    iframe, payout_selector = find_game_elements_v7(driver, game_handle, nome_log)
+                    iframe, payout_selector = find_game_elements_v8(driver, game_handle, nome_log)
                     if not iframe: raise Exception("Falha ao localizar elementos.")
 
                 # Tenta entrar no iframe
-                driver.switch_to.frame(iframe)
+                driver.switch_to.frame(iframe) # ⚠️ O iframe precisa ser o objeto retornado (o que já fazemos)
 
                 by_type = By.CSS_SELECTOR if not payout_selector.startswith('//') else By.XPATH
                 first_payout = driver.find_element(by_type, payout_selector)
                 
-                # *** FIX CRÍTICO V7: LEITURA ABRANGENTE ***
+                # *** FIX CRÍTICO V7/V8: LEITURA ABRANGENTE ***
                 text_candidates = [
                     first_payout.text,
                     first_payout.get_attribute("innerText"),
@@ -277,44 +277,43 @@ def start_bot_thread(driver, bot_config: dict, game_handle: str):
                     first_payout.get_attribute("innerHTML")
                 ]
                 
+                # ⚠️ NOVO FIX V8: Tenta encontrar o texto válido em qualquer um dos atributos lidos
+                found_valid_text = False
                 for t in text_candidates:
-                    # Tenta limpar o texto e ver se é um float válido
                     if t:
                         temp_clean = t.strip().lower().replace('x', '').replace(',', '.')
                         try:
-                            if float(temp_clean) >= 1.0: # Deve ser pelo menos 1.0
-                                raw_text = t
+                            # Tenta converter para float e verifica se é um multiplicador válido
+                            if float(temp_clean) >= 1.0: 
+                                raw_text = t # Usa o texto original para debug, mas processa o limpo
+                                found_valid_text = True
                                 break
                         except ValueError:
-                            continue # Não é um número válido, tenta o próximo candidato
+                            continue
                 
-                if not raw_text:
-                    print(f"⚠️ [{nome_log}] DEBUG: Conteúdo lido vazio/inválido. Tentativas: {text_candidates}")
+                if not found_valid_text:
+                    # Se não achou texto válido, loga o que o bot viu no innerHTML
+                    print(f"⚠️ [{nome_log}] DEBUG: Conteúdo lido vazio/inválido. Tentativas (innerHTML): {first_payout.get_attribute('innerHTML')}")
                 
-            except (StaleElementReferenceException, NoSuchElementException, WebDriverException, Exception) as e:
-                # O elemento sumiu (StaleElement) ou o iframe foi perdido
+            except (StaleElementReferenceException, NoSuchElementException, WebDriverException, Exception):
                 iframe = None 
                 payout_selector = None
-                # Não é necessário logar aqui, pois a busca re-tentará e logará se falhar
+                driver.switch_to.default_content() # Volta para o default para evitar travamento
                 continue 
         # === FIM DA SEÇÃO CRÍTICA ===
         
         # PROCESSAMENTO
         if raw_text:
-            # Garante que só 'x' e ',' são removidos/trocados.
             clean_text = raw_text.strip().lower().replace('x', '').replace(',', '.')
             
             if clean_text:
                 try:
                     novo_valor = float(clean_text)
                 except ValueError:
-                    print(f"❌ [{nome_log}] ERRO PARSE: Não conseguiu converter '{clean_text}' para float.")
                     continue 
 
                 if novo_valor != LAST_SENT:
                     if novo_valor < 1.0:
-                        # Ignora valores menores que 1.0 (se por acaso ler '1,00' como '1.0' e cair aqui)
-                        # Isso é uma proteção, o Aviator não tem multiplicadores menores que 1.0
                         continue 
                         
                     now_br = datetime.now(TZ_BR)
@@ -330,8 +329,6 @@ def start_bot_thread(driver, bot_config: dict, game_handle: str):
 
                     LAST_SENT = novo_valor
                     ULTIMO_MULTIPLIER_TIME = time()
-                
-                # else: print(f"[{nome_log}] Valor repetido: {novo_valor}x") # Descomente para ver o polling
         
         # 1. Check Inatividade (6 minutos)
         if (time() - ULTIMO_MULTIPLIER_TIME) > TEMPO_MAX_INATIVIDADE:
@@ -401,7 +398,7 @@ if __name__ == "__main__":
         sys.exit()
     
     print("==============================================")
-    print("    GOATHBOT V7 - FIX LEITURA DE MULTIPLICADOR")
+    print("    GOATHBOT V8 - FIX LEITURA FINAL")
     print("==============================================")
 
     while True:
