@@ -2,3 +2,4 @@ flask
 selenium
 webdriver-manager
 gunicorn
+pytz  # <--- ADICIONE ESTA LINHA
