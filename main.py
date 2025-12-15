@@ -2,6 +2,7 @@ import time
 import threading
 import os
 import datetime
+import pytz  # <-- NOVO: Importa a biblioteca de fusos horários
 from flask import Flask
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -10,6 +11,9 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 # Variável global para rastrear o status
 last_refresh_time = "N/A"
+
+# Define o fuso horário de Brasília (BRT/BRST)
+TZ_BRAZIL = pytz.timezone('America/Sao_Paulo') # <-- NOVO: Fuso horário
 
 # --- Configuração do Servidor Web (Flask) ---
 app = Flask(__name__)
@@ -76,8 +80,9 @@ def run_browser():
                 driver.refresh()
                 time.sleep(5) # Pequena pausa entre refreshes
             
-            # Atualiza o tempo global para que o endpoint '/' reflita a atividade
-            last_refresh_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Atualiza o tempo global usando o fuso horário de Brasília
+            brazil_time = datetime.datetime.now(TZ_BRAZIL) # <-- CORREÇÃO: Pega a hora com o fuso
+            last_refresh_time = brazil_time.strftime("%Y-%m-%d %H:%M:%S") # <-- Formata
             print(f"Páginas recarregadas com sucesso em: {last_refresh_time}")
 
     except Exception as e:
